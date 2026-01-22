@@ -7,6 +7,13 @@ Author: Abraham (Priler)
 Github repo: https://github.com/Priler/samurai
 """
 
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    message=r'^Field "model_custom_emoji_id" has conflict with protected namespace "model_"\..*',
+)
+
 import asyncio
 import logging
 import sys
