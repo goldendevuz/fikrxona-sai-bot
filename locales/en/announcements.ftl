@@ -68,19 +68,19 @@ announcement-1 =
 announcement-2 =
     @message: msg-chat-rules
     @every: 9600-12000
-    @groups: -1001394505089
+    @groups: -1003002995352
 
 announcement-3 =
     @message: msg-donate
     @every: 19800-23400
-    @groups: -1001394505089
+    @groups: -1003002995352
 
 announcement-4 =
     @message: msg-website
     @every: 16200-19800
-    @groups: -1001394505089
+    @groups: -1003002995352
 
 announcement-5 =
     @message: msg-share-bot
     @every: 12600-16200
-    @groups: -1001394505089
+    @groups: -1003002995352
