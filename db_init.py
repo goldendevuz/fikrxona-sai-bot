@@ -6,7 +6,7 @@ CAUTION: it will DROP ALL DATA in the tables!
 
 Uncomment the exit() line below to run it.
 """
-exit("COMMENT THIS LINE IN ORDER TO RE-INIT DATABASE TABLES")
+# exit("COMMENT THIS LINE IN ORDER TO RE-INIT DATABASE TABLES")
 
 import asyncio
 import logging

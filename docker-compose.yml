@@ -3,3 +3,9 @@ services:
     build: .
     env_file: .env
     restart: unless-stopped
+    volumes:
+      - bot_db:/app/data  # persistent volume for SQLite
+      - ./data:/app/data  # optional host mount for debugging
+
+volumes:
+  bot_db:
