@@ -5,6 +5,7 @@ from aiogram import Dispatcher
 
 from .i18n import I18nMiddleware
 from .throttling import ThrottlingMiddleware
+from .recent_messages import RecentMessagesMiddleware
 
 
 def register_all_middlewares(
@@ -31,6 +32,10 @@ def register_all_middlewares(
     dp.message.middleware(i18n_middleware)
     dp.callback_query.middleware(i18n_middleware)
     dp.edited_message.middleware(i18n_middleware)
+
+    # Track all group message types, including those consumed by specialized
+    # handlers, so retrospective NSFW cleanup can be maade
+    dp.message.middleware(RecentMessagesMiddleware())
     
     # Throttling middleware - rate limiting for private chats
     if enable_throttling:
@@ -46,4 +51,5 @@ __all__ = [
     "register_all_middlewares",
     "I18nMiddleware",
     "ThrottlingMiddleware",
+    "RecentMessagesMiddleware",
 ]

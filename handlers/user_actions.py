@@ -62,7 +62,9 @@ async def cmd_report(message: Message) -> None:
         return
 
     # check if already reported
-    if not await begin_report(chat_id, reported_msg.message_id):
+    if not await begin_report(
+        chat_id, reported_msg.message_id, reported_msg.from_user.id
+    ):
         # already being handled - already being handled
         try:
             await message.delete()

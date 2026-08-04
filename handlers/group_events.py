@@ -44,6 +44,7 @@ from services.cache import (
     MemberData
 )
 from services.announcements import track_message
+from services.recent_messages import delete_recent_messages
 from utils import (
     get_string, _random, user_mention, write_log, 
     generate_log_message, remove_prefix, get_message_text,
@@ -824,6 +825,12 @@ async def _report_nsfw(
     log_label: str, extra_info: str = None
 ) -> None:
     """Delete message and report to log channel with action buttons."""
+    await delete_recent_messages(
+        message.bot,
+        message.chat.id,
+        message.from_user.id,
+        exclude_message_id=message.message_id,
+    )
     log_msg = escape_html(msg_text) if msg_text else "[медиа без текста]"
     if extra_info:
         log_msg += f"\n\n{extra_info}"

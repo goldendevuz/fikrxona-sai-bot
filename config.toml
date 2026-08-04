@@ -123,6 +123,12 @@ check_rep_threshold = 50
 # delay between profile checks (if the user changes the profile picture, etc)
 profile_check_cooldown = 3600
 
+# after an NSFW detection, remove this user's messages from the last N seconds
+recent_cleanup_seconds = 300
+
+# maximum recent messages retained per user and group
+recent_messages_max = 100
+
 
 [db]
 url = "sqlite+aiosqlite:///db.sqlite"

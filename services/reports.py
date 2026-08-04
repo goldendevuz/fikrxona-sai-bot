@@ -19,6 +19,8 @@ _recent_reports: dict[int, deque] = {}
 _state_lock = asyncio.Lock()
 _pending_reports: set[tuple[int, int]] = set()
 _resolved_reports: TTLCache = TTLCache(maxsize=5000, ttl=86400)
+_active_report_by_user: TTLCache = TTLCache(maxsize=5000, ttl=86400)
+_report_users: TTLCache = TTLCache(maxsize=5000, ttl=86400)
 
 # Max reports to track per group
 MAX_TRACKED_REPORTS = 20
@@ -40,13 +42,19 @@ def track_report(group_id: int, message_id: int) -> None:
     logger.debug(f"Tracked report: group={group_id}, msg={message_id}")
 
 
-async def begin_report(group_id: int, message_id: int) -> bool:
+async def begin_report(group_id: int, message_id: int, reported_user_id: int) -> bool:
     """Atomically reserve a report while it is delivered to moderators."""
     key = (group_id, message_id)
     async with _state_lock:
-        if key in _pending_reports or is_already_reported(group_id, message_id):
+        if (
+            key in _pending_reports
+            or is_already_reported(group_id, message_id)
+            or reported_user_id in _active_report_by_user
+        ):
             return False
         _pending_reports.add(key)
+        _active_report_by_user[reported_user_id] = key
+        _report_users[key] = reported_user_id
         return True
 
 
@@ -57,6 +65,10 @@ async def finish_report(group_id: int, message_id: int, success: bool) -> None:
         _pending_reports.discard(key)
         if success:
             track_report(group_id, message_id)
+        else:
+            user_id = _report_users.pop(key, None)
+            if user_id is not None and _active_report_by_user.get(user_id) == key:
+                _active_report_by_user.pop(user_id, None)
 
 
 async def claim_report_action(group_id: int, message_id: int) -> bool:
@@ -66,6 +78,9 @@ async def claim_report_action(group_id: int, message_id: int) -> bool:
         if key in _resolved_reports:
             return False
         _resolved_reports[key] = True
+        user_id = _report_users.pop(key, None)
+        if user_id is not None and _active_report_by_user.get(user_id) == key:
+            _active_report_by_user.pop(user_id, None)
         return True
 
 

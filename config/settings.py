@@ -3,7 +3,7 @@ from pathlib import Path
 from tomllib import load
 from typing import Type, TypeVar, List
 
-from pydantic import BaseModel, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
 
 ConfigType = TypeVar("ConfigType", bound=BaseModel)
@@ -97,6 +97,8 @@ class NSFWConfig(BaseModel):
     anime_prediction_threshold: float = 0.7
     check_rep_threshold: int = 50
     profile_check_cooldown: int = 3600
+    recent_cleanup_seconds: int = Field(default=300, gt=0)
+    recent_messages_max: int = Field(default=100, gt=0)
 
 
 class DatabaseConfig(BaseModel):
