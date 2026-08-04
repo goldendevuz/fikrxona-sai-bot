@@ -742,7 +742,10 @@ async def check_for_unwanted(message: Message, msg_text: str, member: MemberData
 
         if is_nsfw:
             extra = f"<i>Scores:</i> {_format_nsfw_scores(prediction)}" if prediction else None
-            await _report_nsfw(message, msg_text, member, "🔞 NSFW (фото)", extra)
+            await _report_nsfw(
+                message, msg_text, member, "🔞 NSFW (фото)", extra,
+                cleanup_recent=True,
+            )
             return True
 
     # profile-based checks with per-user cooldown
@@ -781,7 +784,10 @@ async def check_for_unwanted(message: Message, msg_text: str, member: MemberData
             if is_nsfw:
                 mark_nsfw_profile_checked(user_id)
                 extra = f"<i>Scores:</i> {_format_nsfw_scores(prediction)}" if prediction else None
-                await _report_nsfw(message, msg_text, member, "🔞 NSFW (профиль)", extra)
+                await _report_nsfw(
+                    message, msg_text, member, "🔞 NSFW (профиль)", extra,
+                    cleanup_recent=True,
+                )
                 return True
 
         mark_nsfw_profile_checked(user_id)
@@ -822,15 +828,16 @@ async def _maybe_autoban(
 
 async def _report_nsfw(
     message: Message, msg_text: Optional[str], member: MemberData,
-    log_label: str, extra_info: str = None
+    log_label: str, extra_info: str = None, *, cleanup_recent: bool = False
 ) -> None:
     """Delete message and report to log channel with action buttons."""
-    await delete_recent_messages(
-        message.bot,
-        message.chat.id,
-        message.from_user.id,
-        exclude_message_id=message.message_id,
-    )
+    if cleanup_recent:
+        await delete_recent_messages(
+            message.bot,
+            message.chat.id,
+            message.from_user.id,
+            exclude_message_id=message.message_id,
+        )
     log_msg = escape_html(msg_text) if msg_text else "[медиа без текста]"
     if extra_info:
         log_msg += f"\n\n{extra_info}"

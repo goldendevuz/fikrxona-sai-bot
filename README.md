@@ -3,11 +3,11 @@
 Simple, yet effective **auto-moderator bot for telegram**.  
 With reports, logs, profanity filter, anti-spam AI, NSFW detection, reputation system and more :3
 
-## What samurai do?
+## What does Samurai do?
 
 - **Anti-Profanity**: Automatically detects and removes messages containing profanity (Russian/English)
 - **Anti-Spam**: ML-based spam detection for new users
-- **NSFW Detection**: Profile photo analysis for NSFW accounts
+- **NSFW Detection**: Analysis of eligible in-chat images and user profile photos, with recent-message cleanup after detection
 - **Reputation System**: Users gain reputation through positive participation
 - **Report System**: Users can report messages to admins
 - **Scheduled Announcements**: Periodic automated messages
@@ -20,7 +20,6 @@ samurai/
 ├── config/
 │   ├── __init__.py
 │   ├── settings.py        # Pydantic configuration
-│   └── config.toml        # Configuration file
 ├── core/
 │   ├── __init__.py
 │   └── i18n.py            # Fluent internationalization
@@ -52,15 +51,18 @@ samurai/
 ├── middlewares/
 │   ├── __init__.py
 │   ├── throttling.py      # Middleware for rate limiting
-│   └── i18n.py            # I18n middleware
+│   ├── i18n.py            # I18n middleware
+│   └── recent_messages.py # Tracks messages for retrospective moderation
 ├── services/
 │   ├── announcements.py   # Scheduled announcements
-│   ├── cache.py           # LRU caching
+│   ├── cache.py           # TTL/LRU caches and batched database updates
 │   ├── gender.py          # Gender detection
 │   ├── nsfw.py            # NSFW detection
 │   ├── profanity.py       # Profanity detection
-│   ├── healthcheck.py     # Healthcheck server for containers orchestration
+│   ├── healthcheck.py     # Health-check server for container orchestration
 │   ├── ml_manager.py      # Unloads unused ML models from memory after some time
+│   ├── recent_messages.py # Recent-message history and cleanup
+│   ├── reports.py         # Report state and duplicate prevention
 │   └── spam.py            # Spam detection
 ├── utils/
 │   ├── helpers.py         # Utility functions
@@ -68,9 +70,10 @@ samurai/
 │   └── localization.py    # Localization exports
 ├── libs/                  # External libraries (censure, gender_extractor)
 ├── ruspam_model/          # ML model for spam detection
+├── config.toml            # Main configuration file
+├── pyproject.toml         # Package metadata and dependencies
 ├── requirements.txt
 ├── Dockerfile
-├── config.py              # Configuration of the bot
 ├── db_init.py             # Use this to initialize your database tables
 └── .env.example
 ```
@@ -118,6 +121,17 @@ report-message = 👆 Отправлено { $date }
 - Python 3.11+ is required
 - Bot token from [@BotFather](https://t.me/BotFather)
 
+### Telegram side setup
+
+Samurai must receive ordinary group messages to moderate them:
+
+1. Open [@BotFather](https://t.me/BotFather), select the bot, and disable group privacy mode under **Bot Settings → Group Privacy**.
+2. Add the bot as an administrator in every group listed in `groups.main`.
+3. Grant at least **Delete messages**, **Ban users**, and **Restrict users** permissions.
+4. Add the bot to the private reports and logs channels and allow it to post and edit its messages.
+
+Without these permissions, Telegram will not deliver all relevant messages or will reject moderation actions.
+
 ### Setup process
 
 1. Clone the repository
@@ -139,6 +153,14 @@ report-message = 👆 Отправлено { $date }
    python bot.py
    ```
 
+   Alternatively, install the project as a package and use its console command:
+   ```bash
+   pip install -e ".[ml]"
+   samurai
+   ```
+
+   Run the installed command from the repository root because the bot loads its locales, configuration, and bundled spam model through project-relative paths.
+
 6. Enjoy!
 
 ### Environment Variables in Production
@@ -150,7 +172,7 @@ For production deployments, you can also set environment variables directly inst
 export BOT_TOKEN="your_bot_token"
 export BOT_OWNER="your_user_id"
 export GROUPS_MAIN="-1001234567890"
-export DB_URL="sqlite:///./samurai.db"
+export DB_URL="sqlite+aiosqlite:///samurai.db"
 
 # Or pass them inline
 BOT_TOKEN="..." BOT_OWNER="..." python bot.py
@@ -192,21 +214,44 @@ Use this script **ONLY** when:
 - Migrating to a new database
 - Resetting all data *(development only)*
 
+[!] The project currently has no schema migration system.  
+Back up the database before changing models or running this script.
+
 ### Docker
 
 ```bash
 docker build -t samurai-bot .
-docker run -d --name samurai-bot -v $(pwd)/config.toml:/app/config.toml samurai-bot
+docker volume create samurai-data
+docker run -d --name samurai-bot \
+  --env-file .env \
+  -e DB_URL="sqlite+aiosqlite:////app/data/samurai.db" \
+  -v "$(pwd)/config.toml:/app/config.toml:ro" \
+  -v samurai-data:/app/data \
+  -p 8080:8080 \
+  samurai-bot
 ```
+
+The data volume preserves the SQLite database and announcement timestamps across container replacement. Port `8080` is only needed when `[healthcheck].enabled = true`.
+
+### Health checks (heartbeat)
+
+When enabled in `config.toml`, the HTTP server exposes:
+
+- `GET /health` - returns success while the server is running
+- `GET /ready` - returns HTTP 200 after bot startup and HTTP 503 during startup or shutdown
+
+Set `HEALTHCHECK_PORT` to override the configured port through the environment.
 
 ## RAM usage
 
 Currently bot uses ~800mb of RAM for ML models and for data caching.  
 ~~Probably we could reduce ML models RAM usage by implementing ONNX runtime models, but that's plans for future updates.~~  
-That ain't worked, the only viable solution would be to quantize the models :3
+That ain't worked, the only viable solution would be to quantize the models :3  
 
-For now, if your server doesn't handle and the process being killed with *Out of memory (`dmesg | grep -i "killed process"`)*,
-simple solution is to add swap:
+However memory usage depends on which lazy-loaded ML models are active.  
+The ML manager can unload inactive models when `[ml].auto_unload_enabled` is enabled.
+
+If the server kills the process due to an out-of-memory condition (`dmesg | grep -i "killed process"`), consider enabling model auto-unload, reducing cache sizes, adding memory, or adding swap:
 ```bash
 # Create 2GB swap file
 fallocate -l 2G /swapfile
@@ -226,11 +271,16 @@ echo '/swapfile none swap sw 0 0' >> /etc/fstab
 |----------|-------------|
 | `BOT_TOKEN` | Telegram bot token |
 | `BOT_OWNER` | Owner's Telegram user ID |
+| `BOT_LOCALE` | Default locale, such as `ru` or `en` |
 | `GROUPS_MAIN` | Main group chat ID __(can be a comma separated list)__ |
 | `GROUPS_REPORTS` | Reports group chat ID |
 | `GROUPS_LOGS` | Logs group chat ID |
-| `LINKED_CHANNEL` | Linked channel ID __(can be a comma separated list)__ |
-| `DB_URL` | Database URL |
+| `LINKED_CHANNELS` | Linked channel IDs __(comma-separated)__ |
+| `DB_URL` | Async database URL, for example `sqlite+aiosqlite:///db.sqlite` |
+| `HEALTHCHECK_PORT` | Health-check HTTP port |
+| `CONFIG_FILE_PATH` | Path to an alternative TOML configuration file |
+
+All behavior settings are available in `config.toml`, including spam thresholds, NSFW thresholds and cleanup, cache sizes, throttling, announcements, health checks, and ML model lifecycle management.
 
 ## Built-in Commands
 
@@ -266,6 +316,11 @@ echo '/swapfile none swap sw 0 0' >> /etc/fstab
 | `!chatid` | Get current chat ID |
 | `!reload` | Reload announcements from localization files |
 | `!log <text>` | Write test log |
+| `!nsfw` | Test an attached image for NSFW content (use as the photo caption) |
+| `!top_violators_profanity [count]` | Show users with the most profanity violations |
+| `!top_violators_spam [count]` | Show users with the most spam violations |
+
+Commands registered with both prefixes can also be used with `/` instead of `!`.
 
 ## External Libraries
 
