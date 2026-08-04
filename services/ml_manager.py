@@ -25,7 +25,7 @@ async def _check_and_unload() -> None:
         ttl_seconds = config.ml.spam_ttl_minutes * 60
         
         if last_used > 0 and (current_time - last_used) > ttl_seconds:
-            spam.unload_model()
+            await asyncio.to_thread(spam.unload_model)
             logger.info(f"Unloaded spam model (unused for {config.ml.spam_ttl_minutes} min)")
     
     # check NSFW model
@@ -34,7 +34,7 @@ async def _check_and_unload() -> None:
         ttl_seconds = config.ml.nsfw_ttl_minutes * 60
         
         if last_used > 0 and (current_time - last_used) > ttl_seconds:
-            nsfw.unload_model()
+            await asyncio.to_thread(nsfw.unload_model)
             logger.info(f"Unloaded NSFW model (unused for {config.ml.nsfw_ttl_minutes} min)")
 
 
@@ -71,13 +71,17 @@ def start_monitor() -> None:
     _task = asyncio.create_task(_monitor_loop())
 
 
-def stop_monitor() -> None:
+async def stop_monitor() -> None:
     """Stop the background monitor task."""
     global _task
     
     if _task is not None:
         _task.cancel()
-        _task = None
+        try:
+            await _task
+        except asyncio.CancelledError:
+            pass
+    _task = None
 
 
 def get_status() -> dict:

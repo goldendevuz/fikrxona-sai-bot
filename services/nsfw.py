@@ -10,6 +10,7 @@ from typing import Optional
 import logging
 import time
 import gc
+import threading
 
 from PIL import Image
 import torch
@@ -23,6 +24,7 @@ MODEL_NAME = "prithivMLmods/siglip2-x256-explicit-content"
 _model = None
 _processor = None
 _last_used: float = 0.0  # timestamp of last usage
+_lock = threading.RLock()
 
 # model expects 256x256 images - resize to this for RAM savings
 TARGET_SIZE = (256, 256)
@@ -40,22 +42,24 @@ ID2LABEL = {
 def _get_processor():
     """Lazy load processor on first use."""
     global _processor
-    if _processor is None:
-        from transformers import AutoImageProcessor
-        _processor = AutoImageProcessor.from_pretrained(MODEL_NAME, use_fast=False)
-    return _processor
+    with _lock:
+        if _processor is None:
+            from transformers import AutoImageProcessor
+            _processor = AutoImageProcessor.from_pretrained(MODEL_NAME, use_fast=False)
+        return _processor
 
 
 def _get_model():
     """Lazy load model on first use."""
     global _model
-    if _model is None:
-        from transformers import SiglipForImageClassification
-        _model = SiglipForImageClassification.from_pretrained(
-            MODEL_NAME, low_cpu_mem_usage=False, device_map=None
-        )
-        _model.eval()
-    return _model
+    with _lock:
+        if _model is None:
+            from transformers import SiglipForImageClassification
+            _model = SiglipForImageClassification.from_pretrained(
+                MODEL_NAME, low_cpu_mem_usage=False, device_map=None
+            )
+            _model.eval()
+        return _model
 
 
 def _touch() -> None:
@@ -70,26 +74,22 @@ def _force_reload() -> None:
 
     logger.warning("Forcing full NSFW model reload (torch state recovery)")
 
-    _model = None
-    _processor = None
-
-    # clear torch internal caches that accumulate over load/unload cycles
-    torch.clear_autocast_cache()
-    if hasattr(torch._C, '_jit_clear_class_registry'):
-        torch._C._jit_clear_class_registry()
-    if hasattr(torch, 'compiler') and hasattr(torch.compiler, 'reset'):
-        torch.compiler.reset()
-    elif hasattr(torch, '_dynamo'):
-        try:
-            torch._dynamo.reset()
-        except Exception:
-            pass
-
-    gc.collect()
-
-    # reload fresh
-    _get_processor()
-    _get_model()
+    with _lock:
+        _model = None
+        _processor = None
+        torch.clear_autocast_cache()
+        if hasattr(torch._C, '_jit_clear_class_registry'):
+            torch._C._jit_clear_class_registry()
+        if hasattr(torch, 'compiler') and hasattr(torch.compiler, 'reset'):
+            torch.compiler.reset()
+        elif hasattr(torch, '_dynamo'):
+            try:
+                torch._dynamo.reset()
+            except RuntimeError:
+                logger.exception("Failed to reset torch dynamo")
+        gc.collect()
+        _get_processor()
+        _get_model()
 
 
 def classify_explicit_content(image: np.ndarray) -> dict[str, float]:
@@ -137,16 +137,17 @@ def classify_explicit_content(image: np.ndarray) -> dict[str, float]:
 def _run_inference(pil_image: Image.Image) -> Optional[dict[str, float]]:
     """Run model inference, returns None on torch device errors."""
     try:
-        processor = _get_processor()
-        model = _get_model()
-        _touch()
+        # Serialize inference with load/unload
+        with _lock:
+            processor = _get_processor()
+            model = _get_model()
+            _touch()
+            inputs = processor(images=pil_image, return_tensors="pt")
 
-        inputs = processor(images=pil_image, return_tensors="pt")
-
-        with torch.no_grad():
-            outputs = model(**inputs)
-            logits = outputs.logits
-            probs = torch.nn.functional.softmax(logits, dim=1).squeeze().tolist()
+            with torch.no_grad():
+                outputs = model(**inputs)
+                logits = outputs.logits
+                probs = torch.nn.functional.softmax(logits, dim=1).squeeze().tolist()
 
         del inputs, outputs, logits
 
@@ -163,32 +164,34 @@ def unload_model() -> bool:
     """Free memory by unloading model."""
     global _model, _processor, _last_used
 
-    if _model is None and _processor is None:
-        return False
+    with _lock:
+        if _model is None and _processor is None:
+            return False
 
-    _model = None
-    _processor = None
-    _last_used = 0.0
+        _model = None
+        _processor = None
+        _last_used = 0.0
 
-    # clear torch dispatch caches to prevent meta device corruption on next load
-    torch.clear_autocast_cache()
-    if hasattr(torch, 'compiler') and hasattr(torch.compiler, 'reset'):
-        torch.compiler.reset()
-    elif hasattr(torch, '_dynamo'):
-        try:
-            torch._dynamo.reset()
-        except Exception:
-            pass
-
-    gc.collect()
+        # clear caches while inference is excluded by the same lock
+        torch.clear_autocast_cache()
+        if hasattr(torch, 'compiler') and hasattr(torch.compiler, 'reset'):
+            torch.compiler.reset()
+        elif hasattr(torch, '_dynamo'):
+            try:
+                torch._dynamo.reset()
+            except RuntimeError:
+                logger.exception("Failed to reset torch dynamo")
+        gc.collect()
     return True
 
 
 def is_loaded() -> bool:
     """Check if model is currently loaded."""
-    return _model is not None
+    with _lock:
+        return _model is not None
 
 
 def get_last_used() -> float:
     """Get timestamp of last model usage."""
-    return _last_used
+    with _lock:
+        return _last_used

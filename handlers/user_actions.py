@@ -6,11 +6,12 @@ import logging
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 
 from config import config
 from filters import InMainGroups
-from services.reports import is_already_reported, track_report
-from utils import get_string, _random, get_report_comment, get_url_chat_id, MemberStatus
+from services.reports import begin_report, finish_report
+from utils import escape_html, get_string, _random, get_report_comment, get_url_chat_id, MemberStatus
 
 router = Router(name="user_actions")
 logger = logging.getLogger(__name__)
@@ -30,6 +31,14 @@ async def cmd_report(message: Message) -> None:
     reported_msg = message.reply_to_message
     chat_id = message.chat.id
 
+    # Channel-originated posts do not necessarily have a user sender
+    if reported_msg.from_user is None:
+        try:
+            await message.delete()
+        except TelegramBadRequest:
+            pass
+        return
+
     # can't report yourself
     if reported_msg.from_user.id == message.from_user.id:
         await message.reply(get_string("error-report-self"))
@@ -41,28 +50,25 @@ async def cmd_report(message: Message) -> None:
         if user.status in MemberStatus.admin_statuses():
             await message.reply(get_string("error-report-admin"))
             return
-    except Exception:
-        pass  # user might have left, continue with report
+    except TelegramBadRequest:
+        pass  # user may have left
 
     # can't report channel posts (user 777000)
     if reported_msg.from_user.id == 777000:
         try:
             await message.delete()
-        except Exception:
+        except TelegramBadRequest:
             pass
         return
 
     # check if already reported
-    if is_already_reported(chat_id, reported_msg.message_id):
+    if not await begin_report(chat_id, reported_msg.message_id):
         # already being handled - already being handled
         try:
             await message.delete()
-        except Exception:
+        except TelegramBadRequest:
             pass
         return
-
-    # track this report
-    track_report(chat_id, reported_msg.message_id)
 
     # check for report message (anything after /report)
     msg_parts = message.text.split(maxsplit=1)
@@ -71,15 +77,16 @@ async def cmd_report(message: Message) -> None:
     # reply to reported msg with "under review" 
     try:
         bot_reply = await reported_msg.reply(_random("report-under-review"), parse_mode="HTML")
-    except Exception as e:
+    except TelegramAPIError as e:
         # can't reply - maybe deleted (maybe deleted?)
         logger.warning(f"Failed to reply to reported message: {e}")
+        await finish_report(chat_id, reported_msg.message_id, success=False)
         return
     
     # delete the /report command after successful reply
     try:
         await message.delete()
-    except Exception:
+    except TelegramBadRequest:
         pass
 
     # build callback data:
@@ -139,8 +146,9 @@ async def cmd_report(message: Message) -> None:
     ])
 
     # forward and send to admins
+    forwarded_report = None
     try:
-        await reported_msg.forward(config.groups.reports)
+        forwarded_report = await reported_msg.forward(config.groups.reports)
         await message.bot.send_message(
             config.groups.reports,
             get_report_comment(
@@ -154,8 +162,19 @@ async def cmd_report(message: Message) -> None:
             parse_mode="HTML",
             reply_markup=action_keyboard
         )
-    except Exception as e:
-        logger.error(f"Failed to send report to admin channel: {e}")
+        await finish_report(chat_id, reported_msg.message_id, success=True)
+    except TelegramAPIError:
+        logger.exception("Failed to send report to admin channel")
+        await finish_report(chat_id, reported_msg.message_id, success=False)
+        try:
+            await bot_reply.delete()
+        except TelegramBadRequest:
+            pass
+        if forwarded_report is not None:
+            try:
+                await forwarded_report.delete()
+            except TelegramBadRequest:
+                pass
 
 
 @router.message(
@@ -171,7 +190,7 @@ async def calling_all_units(message: Message) -> None:
     )
 
     # format report message
-    header = f"[ {message.chat.title} ]\n\n" if message.chat.title else ""
+    header = f"[ {escape_html(message.chat.title)} ]\n\n" if message.chat.title else ""
 
     try:
         await message.bot.send_message(
@@ -183,5 +202,5 @@ async def calling_all_units(message: Message) -> None:
             ),
             parse_mode="HTML"
         )
-    except Exception as e:
-        logger.error(f"Failed to send @admin alert: {e}")
+    except TelegramAPIError:
+        logger.exception("Failed to send @admin alert")

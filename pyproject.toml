@@ -48,7 +48,7 @@ dev = [
 ]
 
 [project.scripts]
-samurai = "bot:main"
+samurai = "bot:run"
 
 [build-system]
 requires = ["setuptools>=61.0"]

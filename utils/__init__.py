@@ -9,6 +9,7 @@ from .helpers import (
     remove_prefix,
     get_cpu_freq,
     get_message_text,
+    escape_html,
 )
 from .localization import get_string, _, _random
 from .enums import MemberStatus
@@ -24,6 +25,7 @@ __all__ = [
     "remove_prefix",
     "get_cpu_freq",
     "get_message_text",
+    "escape_html",
     "get_string",
     "_",
     "_random",

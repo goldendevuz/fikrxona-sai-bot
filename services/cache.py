@@ -16,6 +16,7 @@ from functools import wraps
 from typing import Optional
 
 import ormar
+from sqlalchemy.exc import IntegrityError
 from cachetools import TTLCache, LRUCache
 
 from config import config
@@ -94,6 +95,7 @@ nsfw_profile_cooldown: TTLCache = TTLCache(
 # pending updates: {user_id: {"field": delta_value}}
 _pending_updates: dict[int, dict[str, int]] = {}
 _batch_lock = asyncio.Lock()
+_flush_lock = asyncio.Lock()
 _flush_task: Optional[asyncio.Task] = None
 
 
@@ -113,6 +115,13 @@ async def queue_member_update(user_id: int, **changes: int) -> None:
             current = _pending_updates[user_id].get(field, 0)
             _pending_updates[user_id][field] = current + delta
 
+        # Keep policy decisions consistent with updates that have not reached the database yet
+        cached = members_cache.get(user_id)
+        if cached is not None:
+            for field, delta in changes.items():
+                if hasattr(cached, field):
+                    setattr(cached, field, getattr(cached, field) + delta)
+
 
 @db_retry()
 async def _apply_member_update(user_id: int, changes: dict[str, int]) -> None:
@@ -131,11 +140,17 @@ async def flush_member_updates() -> int:
     Returns:
         Number of users updated
     """
+    async with _flush_lock:
+        return await _flush_member_updates_locked()
+
+
+async def _flush_member_updates_locked() -> int:
+    """Flush implementation; caller must hold ``_flush_lock``."""
     async with _batch_lock:
         if not _pending_updates:
             return 0
-        
-        updates_copy = dict(_pending_updates)
+
+        updates_copy = {user_id: dict(changes) for user_id, changes in _pending_updates.items()}
         _pending_updates.clear()
     
     count = 0
@@ -150,8 +165,8 @@ async def flush_member_updates() -> int:
             invalidate_member_cache(user_id)
         except ormar.NoMatch:
             pass
-        except Exception as e:
-            logger.error(f"Failed to flush updates for user {user_id}: {e}")
+        except Exception:
+            logger.exception("Failed to flush updates for user %s", user_id)
             failed_updates[user_id] = changes
     
     # re-queue failed updates so they aren't lost
@@ -172,7 +187,8 @@ async def _periodic_flush(interval: int) -> None:
     """Background task to flush updates periodically."""
     while True:
         await asyncio.sleep(interval)
-        await flush_member_updates()
+        # Let an in-progress flush finish even when shutdown cancels this loop.
+        await asyncio.shield(flush_member_updates())
 
 
 def start_batch_flush_task(interval: Optional[int] = None) -> asyncio.Task:
@@ -185,12 +201,16 @@ def start_batch_flush_task(interval: Optional[int] = None) -> asyncio.Task:
     return _flush_task
 
 
-def stop_batch_flush_task() -> None:
+async def stop_batch_flush_task() -> None:
     """Stop the background batch flush task."""
     global _flush_task
     if _flush_task and not _flush_task.done():
         _flush_task.cancel()
-        _flush_task = None
+        try:
+            await _flush_task
+        except asyncio.CancelledError:
+            pass
+    _flush_task = None
 
 
 ### GENDER DETECTION CACHE ###
@@ -239,7 +259,10 @@ async def retrieve_tgmember(bot, chat_id: int, user_id: int):
     # track in reverse index
     if user_id not in _tgmember_user_keys:
         _tgmember_user_keys[user_id] = set()
+    else:
+        _tgmember_user_keys[user_id].intersection_update(tgmembers_cache.keys())
     _tgmember_user_keys[user_id].add(cache_key)
+    _periodically_prune_reverse_indexes()
     
     return result
 
@@ -283,15 +306,21 @@ async def retrieve_or_create_member(user_id: int) -> MemberData:
         member = await Member.objects.get(user_id=user_id)
     except ormar.NoMatch:
         try:
-            member = await Member.objects.create(user_id=user_id, messages_count=1)
-        except Exception:
+            member = await Member.objects.create(user_id=user_id, messages_count=0)
+        except IntegrityError:
             # Race condition: another request created the user first
             # Just fetch it
             member = await Member.objects.get(user_id=user_id)
     
     # cache lightweight dataclass, not ORM object
     member_data = MemberData.from_orm(member)
-    members_cache[user_id] = member_data
+    # A TTL expiry can expose an older DB row while deltas are still queued
+    # Merge those deltas before publishing the refreshed cache entry
+    async with _batch_lock:
+        for field, delta in _pending_updates.get(user_id, {}).items():
+            if hasattr(member_data, field):
+                setattr(member_data, field, getattr(member_data, field) + delta)
+        members_cache[user_id] = member_data
     return member_data
 
 
@@ -309,8 +338,8 @@ async def get_member_orm(user_id: int) -> Member:
         return await Member.objects.get(user_id=user_id)
     except ormar.NoMatch:
         try:
-            return await Member.objects.create(user_id=user_id, messages_count=1)
-        except Exception:
+            return await Member.objects.create(user_id=user_id, messages_count=0)
+        except IntegrityError:
             # race condition: another request created the user first
             return await Member.objects.get(user_id=user_id)
 
@@ -330,6 +359,25 @@ def update_member_cache(user_id: int, member: Member) -> None:
 
 # reverse index: user_id -> set of (user_id, photo_id) cache keys
 _nsfw_user_keys: dict[int, set[tuple]] = {}
+_reverse_index_insertions = 0
+
+
+def _periodically_prune_reverse_indexes() -> None:
+    """Remove reverse-index keys whose TTL cache entries have expired."""
+    global _reverse_index_insertions
+    _reverse_index_insertions += 1
+    if _reverse_index_insertions % 500:
+        return
+    live_tg_keys = set(tgmembers_cache.keys())
+    live_nsfw_keys = set(nsfw_results_cache.keys())
+    for user_id, keys in list(_tgmember_user_keys.items()):
+        keys.intersection_update(live_tg_keys)
+        if not keys:
+            del _tgmember_user_keys[user_id]
+    for user_id, keys in list(_nsfw_user_keys.items()):
+        keys.intersection_update(live_nsfw_keys)
+        if not keys:
+            del _nsfw_user_keys[user_id]
 
 
 def get_cached_nsfw_result(user_id: int, photo_file_unique_id: str) -> Optional[bool]:
@@ -351,7 +399,10 @@ def cache_nsfw_result(user_id: int, photo_file_unique_id: str, is_nsfw: bool) ->
     # track in reverse index
     if user_id not in _nsfw_user_keys:
         _nsfw_user_keys[user_id] = set()
+    else:
+        _nsfw_user_keys[user_id].intersection_update(nsfw_results_cache.keys())
     _nsfw_user_keys[user_id].add(cache_key)
+    _periodically_prune_reverse_indexes()
 
 
 def invalidate_nsfw_cache(user_id: int) -> None:

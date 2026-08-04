@@ -9,6 +9,7 @@ import asyncio
 import io
 import logging
 import random
+from contextlib import suppress
 from typing import Optional
 
 from aiogram import Router, F, Bot
@@ -16,7 +17,7 @@ from aiogram.types import (
     Message, ContentType, InlineKeyboardMarkup, InlineKeyboardButton,
     ChatMemberAdministrator, ChatMemberOwner
 )
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command
 
 from PIL import Image
@@ -46,7 +47,7 @@ from services.announcements import track_message
 from utils import (
     get_string, _random, user_mention, write_log, 
     generate_log_message, remove_prefix, get_message_text,
-    MemberStatus
+    MemberStatus, escape_html
 )
 
 router = Router(name="group_events")
@@ -166,7 +167,7 @@ async def on_me(message: Message) -> None:
         else:
             member_rep_label = get_string("rep-label-generous")
 
-    answer = f"{member_avatar} <b>{full_name}</b>"
+    answer = f"{member_avatar} <b>{escape_html(full_name)}</b>"
     answer += f"\n<b>{get_string('rep-title')}: </b>{member_level} <i> 『{member_rep}{member_rep_label} (<tg-spoiler>{member.reputation_points}</tg-spoiler>)』</i>"
 
     try:
@@ -203,7 +204,7 @@ async def on_spam(message: Message) -> None:
         return
 
     try:
-        log_msg = msg_text
+        log_msg = escape_html(msg_text)
         log_msg += f"\n\n<i>Автор:</i> {user_mention(message.reply_to_message.from_user)}"
 
         # create DB record
@@ -241,6 +242,7 @@ async def on_spam(message: Message) -> None:
 
         await message.reply("🫡 Сообщение помечено как спам.")
     except Exception:
+        logging.getLogger(__name__).exception("Failed to mark message as spam")
         await message.reply("O_o Мда")
 
 
@@ -300,6 +302,7 @@ async def on_rep_reset(message: Message) -> None:
         invalidate_member_cache(message.reply_to_message.from_user.id)
         await message.reply("☯ Уровень репутации участника <i><b>сброшен</b>.</i>")
     except Exception:
+        logging.getLogger(__name__).exception("Failed to reset reputation")
         await message.reply("O_o Мда")
 
 
@@ -329,13 +332,15 @@ async def on_punish(message: Message) -> None:
 @router.message(InMainGroups(), F.content_type == ContentType.NEW_CHAT_MEMBERS)
 async def on_user_join(message: Message) -> None:
     """Remove 'user joined' service message."""
-    await message.delete()
-    await write_log(
-        message.bot,
-        f"Присоединился пользователь {user_mention(message.from_user)}",
-        "➕ Новый участник",
-        message.chat.title
-    )
+    with suppress(TelegramBadRequest):
+        await message.delete()
+    for joined_user in message.new_chat_members or []:
+        await write_log(
+            message.bot,
+            f"Присоединился пользователь {user_mention(joined_user)}",
+            "➕ Новый участник",
+            message.chat.title
+        )
 
 
 # voice messages (discourage)
@@ -391,8 +396,7 @@ async def on_user_location(message: Message) -> None:
 
 
 # cross-chat reply restriction ("Reply in Another Chat")
-@router.message(InMainGroups(), F.external_reply, ~F.is_automatic_forward)
-async def on_external_reply(message: Message) -> None:
+async def _handle_external_reply(message: Message) -> bool:
     """
     Delete cross-chat replies from low-rep users.
 
@@ -400,12 +404,12 @@ async def on_external_reply(message: Message) -> None:
     This covers both plain text replies and forwards containing an external reply.
     """
     if message.from_user is None:
-        return
+        return False
 
     tg_member = await retrieve_tgmember(message.bot, message.chat.id, message.from_user.id)
 
     if tg_member.status in MemberStatus.admin_statuses():
-        return
+        return False
 
     member = await retrieve_or_create_member(message.from_user.id)
 
@@ -421,16 +425,17 @@ async def on_external_reply(message: Message) -> None:
         msg_text = get_message_text(message) or "[медиа без текста]"
         await write_log(
             message.bot,
-            f"{msg_text}\n\n<i>Автор:</i> {user_mention(message.from_user)}",
+            f"{escape_html(msg_text)}\n\n<i>Автор:</i> {user_mention(message.from_user)}",
             "↩️ Антиспам (кросс-чат)",
             message.chat.title
         )
         await _maybe_autoban(message, member, 10, "кросс-чат")
+        return True
+    return False
 
 
 # forwards restriction
-@router.message(InMainGroups(), F.forward_origin)
-async def on_user_forward(message: Message) -> None:
+async def _handle_user_forward(message: Message) -> bool:
     """
     Delete forwards from low-rep users (anti-spam).
     
@@ -439,12 +444,12 @@ async def on_user_forward(message: Message) -> None:
     """
     # skip auto-forwards
     if message.is_automatic_forward:
-        return
+        return False
     
     # allow forwards from linked channels
     if message.forward_from_chat:
         if config.groups.is_linked_channel(message.forward_from_chat.id):
-            return
+            return False
     
     # allow forwards from group members
     if message.forward_from:
@@ -454,9 +459,11 @@ async def on_user_forward(message: Message) -> None:
                 message.forward_from.id
             )
             if forwarded_member.status not in ("left", "kicked"):
-                return
-        except Exception:
-            pass  # user not found or privacy settings
+                return False
+        except TelegramAPIError:
+            logging.getLogger(__name__).debug(
+                "Could not verify forwarded user membership", exc_info=True
+            )
     
     # external forward - check rep
     member = await retrieve_or_create_member(message.from_user.id)
@@ -464,7 +471,7 @@ async def on_user_forward(message: Message) -> None:
 
     # skip admins
     if tg_member.status in MemberStatus.admin_statuses():
-        return
+        return False
 
     if member.reputation_points < config.spam.allow_forwards_threshold:
         await message.delete()
@@ -478,11 +485,11 @@ async def on_user_forward(message: Message) -> None:
         # log
         forward_from = "Unknown"
         if message.forward_from:
-            forward_from = f"👤 {message.forward_from.full_name}"
+            forward_from = f"👤 {escape_html(message.forward_from.full_name)}"
         elif message.forward_from_chat:
-            forward_from = f"📢 {message.forward_from_chat.title or message.forward_from_chat.id}"
+            forward_from = f"📢 {escape_html(message.forward_from_chat.title or message.forward_from_chat.id)}"
         elif message.forward_sender_name:
-            forward_from = f"👤 {message.forward_sender_name}"
+            forward_from = f"👤 {escape_html(message.forward_sender_name)}"
         
         await write_log(
             message.bot,
@@ -492,24 +499,12 @@ async def on_user_forward(message: Message) -> None:
             "📨 Антиспам",
             message.chat.title
         )
+        await _maybe_autoban(message, member, config.spam.forward_violation_penalty, "форвард")
+        return True
+    return False
 
 
 # media restriction
-@router.message(
-    InMainGroups(), 
-    F.content_type.in_(MEDIA_ONLY_CONTENT_TYPES),
-    ~F.is_automatic_forward
-)
-async def on_user_media(message: Message) -> None:
-    """Delete media from low-rep users."""
-    member = await retrieve_or_create_member(message.from_user.id)
-    tg_member = await retrieve_tgmember(message.bot, message.chat.id, message.from_user.id)
-
-    if (tg_member.status not in MemberStatus.admin_statuses() and
-        member.reputation_points < config.spam.allow_media_threshold):
-        await message.delete()
-
-
 ### CHANNEL AUTO-FORWARD (bot comments on posts) ###
 
 @router.message(InMainGroups(), F.is_automatic_forward)
@@ -525,15 +520,23 @@ async def on_channel_post(message: Message) -> None:
 
 @router.message(
     InMainGroups(),
-    F.content_type.in_({ContentType.TEXT, ContentType.PHOTO, ContentType.DOCUMENT, ContentType.VIDEO}),
-    ~F.is_automatic_forward
-)
-@router.edited_message(
-    InMainGroups(),
-    F.content_type.in_({ContentType.TEXT, ContentType.PHOTO, ContentType.DOCUMENT, ContentType.VIDEO}),
+    F.content_type.in_(MEDIA_CONTENT_TYPES | {ContentType.TEXT}),
     ~F.is_automatic_forward
 )
 async def on_user_message(message: Message) -> None:
+    await _process_user_message(message, count_clean_message=True)
+
+
+@router.edited_message(
+    InMainGroups(),
+    F.content_type.in_(MEDIA_CONTENT_TYPES | {ContentType.TEXT}),
+    ~F.is_automatic_forward
+)
+async def on_edited_user_message(message: Message) -> None:
+    await _process_user_message(message, count_clean_message=False)
+
+
+async def _process_user_message(message: Message, count_clean_message: bool) -> None:
     """
     Process every user message - profanity, spam, reputation.
     
@@ -544,6 +547,11 @@ async def on_user_message(message: Message) -> None:
 
     # skip channel-originated messages (sender_chat set, from_user is None)
     if message.from_user is None:
+        return
+
+    if count_clean_message and message.external_reply and await _handle_external_reply(message):
+        return
+    if count_clean_message and message.forward_origin and await _handle_user_forward(message):
         return
 
     member = await retrieve_or_create_member(message.from_user.id)
@@ -567,16 +575,16 @@ async def on_user_message(message: Message) -> None:
         if _contains_chinese(msg_text):
             await message.delete()
 
-            await queue_member_update(
-                user_id,
-                violations_count_spam=1,
-                reputation_points=-5
-            )
+            if count_clean_message:
+                await queue_member_update(
+                    user_id, violations_count_spam=1, reputation_points=-5
+                )
 
-            log_msg = msg_text
+            log_msg = escape_html(msg_text)
             log_msg += f"\n\n<i>Автор:</i> {user_mention(message.from_user)}"
             await write_log(message.bot, log_msg, "🈲 Антиспам (CN)", message.chat.title)
-            await _maybe_autoban(message, member, 5, "CN-спам")
+            if count_clean_message:
+                await _maybe_autoban(message, member, 5, "CN-спам")
             return
 
         # invisible unicode spacing spam (Hangul filler chars between words)
@@ -584,16 +592,16 @@ async def on_user_message(message: Message) -> None:
                 _contains_invisible_spacing(msg_text)):
             await message.delete()
 
-            await queue_member_update(
-                user_id,
-                violations_count_spam=1,
-                reputation_points=-10
-            )
+            if count_clean_message:
+                await queue_member_update(
+                    user_id, violations_count_spam=1, reputation_points=-10
+                )
 
-            log_msg = msg_text
+            log_msg = escape_html(msg_text)
             log_msg += f"\n\n<i>Автор:</i> {user_mention(message.from_user)}"
             await write_log(message.bot, log_msg, "👻 Антиспам (невидимые символы)", message.chat.title)
-            await _maybe_autoban(message, member, 10, "невидимые символы")
+            if count_clean_message:
+                await _maybe_autoban(message, member, 10, "невидимые символы")
             return
 
         # check profanity
@@ -602,15 +610,12 @@ async def on_user_message(message: Message) -> None:
         if is_profanity:
             await message.delete()
 
-            await queue_member_update(
-                user_id,
-                violations_count_profanity=1,
-                reputation_points=-20
-            )
+            if count_clean_message:
+                await queue_member_update(
+                    user_id, violations_count_profanity=1, reputation_points=-20
+                )
 
-            log_msg = msg_text
-            if bad_word:
-                log_msg = log_msg.replace(bad_word, f'<u><b>{bad_word}</b></u>')
+            log_msg = escape_html(msg_text)
             log_msg += f"\n\n<i>Автор:</i> {user_mention(message.from_user)}"
             await write_log(message.bot, log_msg, "🤬 Антимат", message.chat.title)
             return
@@ -620,15 +625,14 @@ async def on_user_message(message: Message) -> None:
                 _is_single_emoji(msg_text)):
             await message.delete()
 
-            await queue_member_update(
-                user_id,
-                violations_count_spam=1,
-                reputation_points=-5
-            )
+            if count_clean_message:
+                await queue_member_update(
+                    user_id, violations_count_spam=1, reputation_points=-5
+                )
 
             await write_log(
                 message.bot,
-                f"{msg_text}\n\n<i>Автор:</i> {user_mention(message.from_user)}",
+                f"{escape_html(msg_text)}\n\n<i>Автор:</i> {user_mention(message.from_user)}",
                 "🤖 Антиспам (эмодзи)",
                 message.chat.title
             )
@@ -639,19 +643,19 @@ async def on_user_message(message: Message) -> None:
                 _contains_link(message)):
             await message.delete()
 
-            await queue_member_update(
-                user_id,
-                violations_count_spam=1,
-                reputation_points=-10
-            )
+            if count_clean_message:
+                await queue_member_update(
+                    user_id, violations_count_spam=1, reputation_points=-10
+                )
 
             await write_log(
                 message.bot,
-                f"{msg_text}\n\n<i>Автор:</i> {user_mention(message.from_user)}",
+                f"{escape_html(msg_text)}\n\n<i>Автор:</i> {user_mention(message.from_user)}",
                 "🔗 Антиспам (ссылка)",
                 message.chat.title
             )
-            await _maybe_autoban(message, member, 10, "ссылка")
+            if count_clean_message:
+                await _maybe_autoban(message, member, 10, "ссылка")
             return
 
         # no profanity - check spam
@@ -665,19 +669,19 @@ async def on_user_message(message: Message) -> None:
             # spam detected
             await message.delete()
 
-            await queue_member_update(
-                user_id,
-                violations_count_spam=1,
-                reputation_points=-5
-            )
+            if count_clean_message:
+                await queue_member_update(
+                    user_id, violations_count_spam=1, reputation_points=-5
+                )
             
-            await _maybe_autoban(message, member, 5, "спам")
+            if count_clean_message:
+                await _maybe_autoban(message, member, 5, "спам")
             return
 
     # check for unwanted content (nsfw, suspicious profiles)
     handled = await check_for_unwanted(message, msg_text, member)
 
-    if not handled:
+    if not handled and count_clean_message:
         # clean msg - increase rep
         await queue_member_update(
             user_id,
@@ -700,12 +704,12 @@ async def check_for_unwanted(message: Message, msg_text: str, member: MemberData
         interval = config.spam.remove_first_comments_interval
         
         if (member.reputation_points < threshold and
-            (message.date - message.reply_to_message.forward_date).seconds <= interval):
+            0 <= (message.date - message.reply_to_message.forward_date).total_seconds() <= interval):
             try:
                 await message.delete()
                 await write_log(
                     message.bot,
-                    f"Удалено сообщение: {message.text}\n\n<i>Автор:</i> {user_mention(message.from_user)}",
+                    f"Удалено сообщение: {escape_html(message.text)}\n\n<i>Автор:</i> {user_mention(message.from_user)}",
                     "🤖 Антибот",
                     message.chat.title
                 )
@@ -742,18 +746,21 @@ async def check_for_unwanted(message: Message, msg_text: str, member: MemberData
 
     # profile-based checks with per-user cooldown
     if is_low_rep and not is_nsfw_profile_on_cooldown(user_id):
-        mark_nsfw_profile_checked(user_id)
-
         # name violation check (spam names like "посмотри мой профиль")
         if not check_name_for_violations(message.from_user.full_name):
+            mark_nsfw_profile_checked(user_id)
             await _report_nsfw(
                 message, msg_text, member, "🚫 Антиспам (имя)",
-                f"<i>Имя:</i> {message.from_user.full_name}"
+                f"<i>Имя:</i> {escape_html(message.from_user.full_name)}"
             )
             return True
 
         # profile photo nsfw check
-        profile_photos = await message.bot.get_user_profile_photos(user_id=user_id)
+        try:
+            profile_photos = await message.bot.get_user_profile_photos(user_id=user_id)
+        except TelegramAPIError:
+            logging.getLogger(__name__).exception("Failed to retrieve profile photos for user %s", user_id)
+            return False
 
         if profile_photos.photos:
             photo = profile_photos.photos[0][-1]
@@ -771,9 +778,12 @@ async def check_for_unwanted(message: Message, msg_text: str, member: MemberData
                 prediction = None
 
             if is_nsfw:
+                mark_nsfw_profile_checked(user_id)
                 extra = f"<i>Scores:</i> {_format_nsfw_scores(prediction)}" if prediction else None
                 await _report_nsfw(message, msg_text, member, "🔞 NSFW (профиль)", extra)
                 return True
+
+        mark_nsfw_profile_checked(user_id)
 
     return False
 
@@ -784,8 +794,10 @@ async def _maybe_autoban(
     """Ban user if violations + rep thresholds are exceeded."""
     if not config.spam.autoban_enabled:
         return
-    new_violations = member.violations_count_spam + 1
-    new_rep = member.reputation_points - penalty
+    # queue_member_update mutates the cached MemberData immediately, so these
+    # values already include the current violation and penalty
+    new_violations = member.violations_count_spam
+    new_rep = member.reputation_points
     if (new_violations >= config.spam.autoban_threshold and
             new_rep < config.spam.autoban_rep_threshold):
         try:
@@ -801,8 +813,10 @@ async def _maybe_autoban(
                 "🚫 Автобан",
                 message.chat.title
             )
-        except Exception:
-            pass  # user left or already banned
+        except TelegramAPIError:
+            logging.getLogger(__name__).exception(
+                "Failed to autoban user %s for %s", message.from_user.id, reason
+            )
 
 
 async def _report_nsfw(
@@ -810,7 +824,7 @@ async def _report_nsfw(
     log_label: str, extra_info: str = None
 ) -> None:
     """Delete message and report to log channel with action buttons."""
-    log_msg = msg_text or "[медиа без текста]"
+    log_msg = escape_html(msg_text) if msg_text else "[медиа без текста]"
     if extra_info:
         log_msg += f"\n\n{extra_info}"
     log_msg += f"\n\n<i>Автор:</i> {user_mention(message.from_user)}"

@@ -2,6 +2,7 @@
 Utility helper functions.
 """
 import datetime
+import html
 from typing import Optional
 
 import psutil
@@ -41,14 +42,13 @@ def get_message_text(message: Message) -> Optional[str]:
 
 def user_mention(from_user) -> str:
     """Generate user mention HTML."""
-    _s = from_user.full_name
+    name = html.escape(from_user.full_name or str(from_user.id))
+    return f'{name} (<a href="tg://user?id={from_user.id}">id{from_user.id}</a>)'
 
-    if from_user.full_name != from_user.mention_html():
-        _s += " (" + from_user.mention_html() + ")"
-    else:
-        _s += f' (<a href="{from_user.url}">id{from_user.id}</a>)'
 
-    return _s
+def escape_html(value: object) -> str:
+    """Escape external text before embedding it in Telegram HTML."""
+    return html.escape(str(value), quote=True)
 
 
 def user_mention_by_id(user_id: int) -> str:
@@ -75,9 +75,9 @@ def generate_log_message(
     log_message = f"🕥 <i>{current_time}</i> "
     
     if chat_title:
-        log_message += f"[<b>{chat_title}</b>] "
+        log_message += f"[<b>{escape_html(chat_title)}</b>] "
     
-    log_message += f"<b>[{log_type.upper()}]</b> "
+    log_message += f"<b>[{escape_html(log_type.upper())}]</b> "
     log_message += message
 
     return log_message
@@ -155,7 +155,7 @@ def get_report_comment(
     # build header with chat name if provided
     header = ""
     if chat_title:
-        header = f"🟢 <b>{chat_title}</b>\n\n"
+        header = f"🟢 <b>{escape_html(chat_title)}</b>\n\n"
     
     # pass variables directly to get_string for Fluent interpolation
     msg = header + get_string(
@@ -170,7 +170,7 @@ def get_report_comment(
         msg += get_string("report_from", reporter=user_mention(reporter))
 
     if report_message:
-        msg += get_string("report_note", note=report_message)
+        msg += get_string("report_note", note=escape_html(report_message))
     return msg
 
 

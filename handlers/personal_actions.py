@@ -18,7 +18,7 @@ from config import config
 from filters import IsOwnerFilter, IsAdminFilter, InMainGroups
 from services.nsfw import classify_explicit_content as nsfw_predict
 from services.profanity import check_for_profanity
-from utils import remove_prefix
+from utils import escape_html, remove_prefix
 
 router = Router(name="personal_actions")
 
@@ -103,7 +103,7 @@ async def cmd_message_from_bot(message: Message) -> None:
     keyboard = await _build_chat_keyboard(message.bot, msg_id)
     
     await message.reply(
-        f"<b>Сообщение:</b>\n<i>{text[:500]}{'...' if len(text) > 500 else ''}</i>\n\n"
+        f"<b>Сообщение:</b>\n<i>{escape_html(text[:500])}{'...' if len(text) > 500 else ''}</i>\n\n"
         f"Выберите куда отправить:",
         reply_markup=keyboard
     )
@@ -145,7 +145,7 @@ async def cmd_chat_id(message: Message) -> None:
     info = (
         f"<b>Chat ID:</b> <code>{chat.id}</code>\n"
         f"<b>Type:</b> {chat_type}\n"
-        f"<b>Title:</b> {chat_title}"
+        f"<b>Title:</b> {escape_html(chat_title)}"
     )
     
     # print to console
@@ -174,7 +174,7 @@ async def cmd_ping_bot(message: Message) -> None:
     reply += "<b>CPU:</b> <i>{} ядер, {:.0f} MHz, загрузка {}%</i>\n".format(
         psutil.cpu_count(logical=True),
         cpu_freq,
-        psutil.cpu_percent(interval=1)
+        await asyncio.to_thread(psutil.cpu_percent, 1)
     )
 
     # ram
@@ -234,8 +234,8 @@ async def cmd_profanity_check(message: Message) -> None:
         lang = "ru" if is_profanity_ru else "en"
 
         log_msg = f"❌ Profanity detected.\n\n"
-        log_msg += text.replace(word, f'<u><b>{word}</b></u>')
-        log_msg += f"\nПаттерн: {pattern}"
+        log_msg += escape_html(text)
+        log_msg += f"\nПаттерн: {escape_html(pattern)}"
         log_msg += f"\nЯзык: {lang}"
 
         await message.reply(log_msg)
@@ -270,8 +270,8 @@ async def cmd_profanity_check_private(message: Message) -> None:
         lang = "ru" if is_profanity_ru else "en"
 
         log_msg = f"❌ Profanity detected.\n\n"
-        log_msg += text.replace(word, f'<u><b>{word}</b></u>')
-        log_msg += f"\nПаттерн: {pattern}"
+        log_msg += escape_html(text)
+        log_msg += f"\nПаттерн: {escape_html(pattern)}"
         log_msg += f"\nЯзык: {lang}"
 
         await message.reply(log_msg)

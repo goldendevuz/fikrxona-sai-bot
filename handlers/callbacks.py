@@ -17,7 +17,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 from config import config
 from db.models import Member, Spam
-from services.reports import remove_report
+from services.reports import claim_report_action, remove_report
 from services.cache import queue_member_update
 from utils import get_string, _random
 from handlers.personal_actions import pending_messages
@@ -31,6 +31,15 @@ def safe_callback(func):
     @wraps(func)
     async def wrapper(call: CallbackQuery) -> None:
         try:
+            report_prefixes = (
+                "rdel_", "rdelban_", "rmute_", "rmute2_",
+                "rdismiss_", "rdismiss2_", "rdismiss3_", "rdismiss4_",
+            )
+            if call.data and call.data.startswith(report_prefixes):
+                parts = call.data.split("_")
+                if not await claim_report_action(int(parts[1]), int(parts[2])):
+                    await call.answer("Уже обработано", show_alert=True)
+                    return
             return await func(call)
         except (ValueError, IndexError) as e:
             logger.warning(f"Malformed callback data in {func.__name__}: {call.data!r} ({e})")
@@ -153,7 +162,7 @@ async def callback_report_delete(call: CallbackQuery) -> None:
     await _update_bot_reply(call.bot, chat_id, bot_reply_id)
 
     await call.message.edit_text(
-        call.message.text + "\n\n" + get_string("action_deleted")
+        call.message.html_text + "\n\n" + get_string("action_deleted")
     )
     await call.answer(text="Done")
 
@@ -185,7 +194,7 @@ async def callback_report_delete_and_ban(call: CallbackQuery) -> None:
     await _update_bot_reply(call.bot, chat_id, bot_reply_id)
 
     await call.message.edit_text(
-        call.message.text + "\n\n" + get_string("action_deleted_banned")
+        call.message.html_text + "\n\n" + get_string("action_deleted_banned")
     )
     await call.answer(text="Done")
 
@@ -222,7 +231,7 @@ async def callback_report_delete_and_mute_24h(call: CallbackQuery) -> None:
     await _update_bot_reply(call.bot, chat_id, bot_reply_id)
 
     await call.message.edit_text(
-        call.message.text + "\n\n" + get_string("action_deleted_readonly")
+        call.message.html_text + "\n\n" + get_string("action_deleted_readonly")
     )
     await call.answer(text="Done")
 
@@ -259,7 +268,7 @@ async def callback_report_delete_and_mute_7d(call: CallbackQuery) -> None:
     await _update_bot_reply(call.bot, chat_id, bot_reply_id)
 
     await call.message.edit_text(
-        call.message.text + "\n\n" + get_string("action_deleted_readonly2")
+        call.message.html_text + "\n\n" + get_string("action_deleted_readonly2")
     )
     await call.answer(text="Done")
 
@@ -284,7 +293,7 @@ async def callback_report_dismiss(call: CallbackQuery) -> None:
         await call.bot.delete_message(chat_id, bot_reply_id)
 
     await call.message.edit_text(
-        call.message.text + "\n\n" + get_string("action_dismissed")
+        call.message.html_text + "\n\n" + get_string("action_dismissed")
     )
     await call.answer(text="Done")
 
@@ -320,7 +329,7 @@ async def callback_report_dismiss_mute_reporter_1d(call: CallbackQuery) -> None:
         await call.bot.delete_message(chat_id, bot_reply_id)
 
     await call.message.edit_text(
-        call.message.text + "\n\n" + get_string("action_deleted_dismissed2")
+        call.message.html_text + "\n\n" + get_string("action_deleted_dismissed2")
     )
     await call.answer(text="Done")
 
@@ -356,7 +365,7 @@ async def callback_report_dismiss_mute_reporter_7d(call: CallbackQuery) -> None:
         await call.bot.delete_message(chat_id, bot_reply_id)
 
     await call.message.edit_text(
-        call.message.text + "\n\n" + get_string("action_deleted_dismissed3")
+        call.message.html_text + "\n\n" + get_string("action_deleted_dismissed3")
     )
     await call.answer(text="Done")
 
@@ -384,7 +393,7 @@ async def callback_report_dismiss_ban_reporter(call: CallbackQuery) -> None:
         await call.bot.delete_message(chat_id, bot_reply_id)
 
     await call.message.edit_text(
-        call.message.text + "\n\n" + get_string("action_deleted_dismissed4")
+        call.message.html_text + "\n\n" + get_string("action_deleted_dismissed4")
     )
     await call.answer(text="Done")
 
@@ -403,7 +412,7 @@ async def callback_delete(call: CallbackQuery) -> None:
         await call.bot.delete_message(chat_id, message_id)
 
     await call.message.edit_text(
-        call.message.text + get_string("action_deleted")
+        call.message.html_text + get_string("action_deleted")
     )
     await call.answer(text="Done")
 
@@ -423,7 +432,7 @@ async def callback_delete_and_ban(call: CallbackQuery) -> None:
     await call.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
 
     await call.message.edit_text(
-        call.message.text + get_string("action_deleted_banned")
+        call.message.html_text + get_string("action_deleted_banned")
     )
     await call.answer(text="Done")
 
@@ -448,7 +457,7 @@ async def callback_delete_and_mute_24h(call: CallbackQuery) -> None:
     )
 
     await call.message.edit_text(
-        call.message.text + get_string("action_deleted_readonly")
+        call.message.html_text + get_string("action_deleted_readonly")
     )
     await call.answer(text="Done")
 
@@ -473,7 +482,7 @@ async def callback_delete_and_mute_7d(call: CallbackQuery) -> None:
     )
 
     await call.message.edit_text(
-        call.message.text + get_string("action_deleted_readonly2")
+        call.message.html_text + get_string("action_deleted_readonly2")
     )
     await call.answer(text="Done")
 
@@ -483,7 +492,7 @@ async def callback_delete_and_mute_7d(call: CallbackQuery) -> None:
 async def callback_dismiss(call: CallbackQuery) -> None:
     """Dismiss report (false alarm) (legacy)."""
     await call.message.edit_text(
-        call.message.text + get_string("action_dismissed")
+        call.message.html_text + get_string("action_dismissed")
     )
     await call.answer(text="Done")
 
@@ -508,7 +517,7 @@ async def callback_dismiss_mute_reporter_1d(call: CallbackQuery) -> None:
     )
 
     await call.message.edit_text(
-        call.message.text + get_string("action_deleted_dismissed2")
+        call.message.html_text + get_string("action_deleted_dismissed2")
     )
     await call.answer(text="Done")
 
@@ -533,7 +542,7 @@ async def callback_dismiss_mute_reporter_7d(call: CallbackQuery) -> None:
     )
 
     await call.message.edit_text(
-        call.message.text + get_string("action_deleted_dismissed3")
+        call.message.html_text + get_string("action_deleted_dismissed3")
     )
     await call.answer(text="Done")
 
@@ -553,7 +562,7 @@ async def callback_dismiss_ban_reporter(call: CallbackQuery) -> None:
     await call.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
 
     await call.message.edit_text(
-        call.message.text + get_string("action_deleted_dismissed4")
+        call.message.html_text + get_string("action_deleted_dismissed4")
     )
     await call.answer(text="Done")
 
@@ -583,7 +592,7 @@ async def callback_spam_test(call: CallbackQuery) -> None:
         pass
 
     await call.message.edit_text(
-        call.message.text + "\n\n<b>Удалено из базы, вероятно тест.</b>"
+        call.message.html_text + "\n\n<b>Удалено из базы, вероятно тест.</b>"
     )
     await call.answer(text="Done")
 
@@ -611,7 +620,7 @@ async def callback_spam_ban(call: CallbackQuery) -> None:
         pass
 
     await call.message.edit_text(
-        call.message.text + "\n\n❌ <b>Юзер забанен, сообщение помечено как спам</b>"
+        call.message.html_text + "\n\n❌ <b>Юзер забанен, сообщение помечено как спам</b>"
     )
     await call.answer(text="Done")
 
@@ -643,7 +652,7 @@ async def callback_spam_not_spam(call: CallbackQuery) -> None:
             pass
 
     await call.message.edit_text(
-        call.message.text + "\n\n❎ <b>Сообщение помечено как НЕ СПАМ</b>"
+        call.message.html_text + "\n\n❎ <b>Сообщение помечено как НЕ СПАМ</b>"
     )
     await call.answer(text="Done")
 
@@ -664,7 +673,7 @@ async def callback_nsfw_ban(call: CallbackQuery) -> None:
             await call.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
 
     await call.message.edit_text(
-        call.message.text + "\n\n❌ <b>Юзер забанен за NSFW изображение профиля.</b>"
+        call.message.html_text + "\n\n❌ <b>Юзер забанен за NSFW изображение профиля.</b>"
     )
     await call.answer(text="Done")
 
@@ -684,6 +693,6 @@ async def callback_nsfw_safe(call: CallbackQuery) -> None:
         pass
 
     await call.message.edit_text(
-        call.message.text + "\n\n❎ <b>Сообщение помечено как не содержащее NSFW.</b>"
+        call.message.html_text + "\n\n❎ <b>Сообщение помечено как не содержащее NSFW.</b>"
     )
     await call.answer(text="Done")

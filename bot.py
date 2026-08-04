@@ -79,7 +79,7 @@ async def on_shutdown(bot: Bot) -> None:
         get_health_server().set_ready(False)
 
     # Stop ML model monitor
-    ml_manager.stop_monitor()
+    await ml_manager.stop_monitor()
 
     # Cancel scheduler task
     if _scheduler_task and not _scheduler_task.done():
@@ -89,7 +89,7 @@ async def on_shutdown(bot: Bot) -> None:
         logger.info("Scheduler stopped")
 
     # Stop batch flush task and flush remaining updates
-    stop_batch_flush_task()
+    await stop_batch_flush_task()
     flushed = await flush_member_updates()
     logger.info(f"Flushed {flushed} pending member updates")
 
@@ -151,5 +151,10 @@ async def main() -> None:
         await bot.session.close()
 
 
-if __name__ == "__main__":
+def run() -> None:
+    """Synchronous console-script entry point."""
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    run()
