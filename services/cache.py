@@ -19,6 +19,7 @@ import ormar
 from cachetools import TTLCache, LRUCache
 
 from config import config
+from db.database import db_retry
 from db.models import Member
 from services.gender import detect_gender as _detect_gender, Gender
 
@@ -113,6 +114,16 @@ async def queue_member_update(user_id: int, **changes: int) -> None:
             _pending_updates[user_id][field] = current + delta
 
 
+@db_retry()
+async def _apply_member_update(user_id: int, changes: dict[str, int]) -> None:
+    """Apply queued deltas to one member row. Retries on transient DB drops."""
+    member = await Member.objects.get(user_id=user_id)
+    for field, delta in changes.items():
+        current_value = getattr(member, field, 0)
+        setattr(member, field, current_value + delta)
+    await member.update()
+
+
 async def flush_member_updates() -> int:
     """
     Flush all pending member updates to database.
@@ -132,13 +143,9 @@ async def flush_member_updates() -> int:
     
     for user_id, changes in updates_copy.items():
         try:
-            member = await Member.objects.get(user_id=user_id)
-            for field, delta in changes.items():
-                current_value = getattr(member, field, 0)
-                setattr(member, field, current_value + delta)
-            await member.update()
+            await _apply_member_update(user_id, changes)
             count += 1
-            
+
             # Invalidate cache after update
             invalidate_member_cache(user_id)
         except ormar.NoMatch:
@@ -258,6 +265,7 @@ def invalidate_tgmember_cache_all(user_id: int) -> None:
 
 ### DATABASE MEMBER CACHE (lightweight dataclass, not ORM) ###
 
+@db_retry()
 async def retrieve_or_create_member(user_id: int) -> MemberData:
     """
     Retrieve or create member record with caching.
@@ -287,6 +295,7 @@ async def retrieve_or_create_member(user_id: int) -> MemberData:
     return member_data
 
 
+@db_retry()
 async def get_member_orm(user_id: int) -> Member:
     """
     Get actual ORM Member object for direct updates.
