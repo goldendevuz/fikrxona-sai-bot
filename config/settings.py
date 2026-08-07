@@ -84,6 +84,13 @@ class SpamConfig(BaseModel):
     autoban_rep_threshold: int = 100  # only auto-ban if rep is below this
 
 
+class ProfanityConfig(BaseModel):
+    """Language-specific exceptions for the profanity detector."""
+
+    allowlist_ru: List[str] = Field(default_factory=list)
+    allowlist_en: List[str] = Field(default_factory=list)
+
+
 class NSFWConfig(BaseModel):
     enabled: bool = True
     comb_sensual_prediction_threshold: float = 0.15
@@ -197,6 +204,7 @@ class Config(BaseModel):
     locale: LocaleConfig = LocaleConfig()
     groups: GroupsConfig = GroupsConfig()
     spam: SpamConfig = SpamConfig()
+    profanity: ProfanityConfig = ProfanityConfig()
     nsfw: NSFWConfig = NSFWConfig()
     db: DatabaseConfig = DatabaseConfig()
     throttling: ThrottlingConfig = ThrottlingConfig()

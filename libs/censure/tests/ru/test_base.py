@@ -24,21 +24,15 @@ class CensorInternalsTestCase(TestCaseRu):
         for x in range(50):
             word = self._get_random_word(russian_only=True)
             word_info = self.censor.check_word(word)
-            self.assertDictContainsSubset({
-                # 'excuse': [],
-                # 'accuse': [],
-                'word': self.censor._prepare_word(word),
-                'is_good': True,
-            }, word_info)
+            self.assertEqual(word_info['word'], self.censor._prepare_word(word))
+            self.assertTrue(word_info['is_good'])
 
     def test_check_e_word(self):
         word = self.data.E_OBSCENE_WORDS[0]
         word_info = self.censor.check_word(word)
-        self.assertDictContainsSubset({
-            'excuse': [],
-            'word': self.censor._prepare_word(word),
-            'is_good': False,
-        }, word_info)
+        self.assertEqual(word_info['excuse'], [])
+        self.assertEqual(word_info['word'], self.censor._prepare_word(word))
+        self.assertFalse(word_info['is_good'])
         self.assertTrue(len(word_info.get('accuse', [])) > 0)
 
     def test_clean_line_e_word(self):

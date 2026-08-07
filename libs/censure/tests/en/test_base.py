@@ -10,7 +10,5 @@ class CensorInternalsTestCase(TestCaseEn):
         for x in range(50):
             word = self._get_random_word()
             word_info = self.censor.check_word(word)
-            self.assertDictContainsSubset({
-                'word': self.censor._prepare_word(word),
-                'is_good': True,
-            }, word_info)
+            self.assertEqual(word_info['word'], self.censor._prepare_word(word))
+            self.assertTrue(word_info['is_good'])

@@ -3,7 +3,7 @@ from __future__ import unicode_literals, print_function
 import os
 import codecs
 
-from censure.base import Censor
+from .base import Censor
 
 
 class CensorHelper:
@@ -19,7 +19,7 @@ class CensorHelper:
         count = 0
         result = []
         for line in text.splitlines():
-            new_line, bad_words_count, bad_phrases_count = self.c.clean_line(line)
+            new_line, bad_words_count, bad_phrases_count, *_ = self.c.clean_line(line)
             count += bad_words_count + bad_phrases_count
             result.append(new_line)
         return '\n'.join(result), count

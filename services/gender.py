@@ -1,14 +1,9 @@
 """
 Gender detection service based on first name analysis.
 """
-import sys
 import re
 import unicodedata
 from enum import Enum
-
-# path setup is centralized in services/__init__.py, guard for direct imports
-if "./libs" not in sys.path:
-    sys.path.insert(0, "./libs")
 
 from libs.gender_extractor import GenderExtractor
 from libs.censure import Censor

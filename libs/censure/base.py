@@ -117,7 +117,7 @@ class CensorBase:
     lang = 'ru'
 
     def __init__(self, do_compile=True):
-        self.lang_lib = import_module('censure.lang.{}'.format(self.lang))
+        self.lang_lib = import_module('.lang.{}'.format(self.lang), package=__package__)
 
         if do_compile:
             # patterns will be pre-compiled, so we need to copy them
@@ -338,14 +338,9 @@ class CensorBase:
         return word_info['is_good']
 
     def _get_rule(self, rule):
-        if not self.do_compile:
-            return rule
-        else:
-            return '{} {}'.format(
-                rule,
-                'If you want to see string-value of regexp, '
-                'init with do_compile=False for debug'
-            )
+        if hasattr(rule, 'pattern'):
+            return rule.pattern
+        return rule
 
     @staticmethod
     def _remove_duplicates(word):

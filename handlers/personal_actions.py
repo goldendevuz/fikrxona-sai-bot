@@ -17,10 +17,28 @@ from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from config import config
 from filters import IsOwnerFilter, IsAdminFilter, InMainGroups
 from services.nsfw import classify_explicit_content as nsfw_predict
-from services.profanity import check_for_profanity
+from services.profanity import find_profanity
 from utils import escape_html, remove_prefix
 
 router = Router(name="personal_actions")
+
+
+def _format_profanity_diagnostic(text: str) -> str | None:
+    matches = find_profanity(text)
+    if not matches:
+        return None
+
+    match = matches[0]
+    return (
+        "❌ Profanity detected.\n\n"
+        f"{escape_html(text)}"
+        f"\nMatch: {escape_html(match.text)}"
+        f"\nNormalized: {escape_html(match.normalized)}"
+        f"\nPosition: {match.start}:{match.end}"
+        f"\nReason: {match.reason}"
+        f"\nPattern: {escape_html(match.pattern or 'unknown')}"
+        f"\nLanguage: {match.language}"
+    )
 
 # temp storage for pending msgs (auto-cleanup after 5 minutes)
 # used by callbacks.py
@@ -222,23 +240,9 @@ async def cmd_profanity_check(message: Message) -> None:
         await message.reply("Укажите текст для проверки после команды.")
         return
 
-    # check russian
-    is_profanity_ru, word_ru, line_info_ru = check_for_profanity(text, "ru")
-    
-    # check english
-    is_profanity_en, word_en, line_info_en = check_for_profanity(text, "en")
-
-    if is_profanity_ru or is_profanity_en:
-        word = word_ru if is_profanity_ru else word_en
-        pattern = line_info_ru[5][0] if is_profanity_ru else line_info_en[5][0]
-        lang = "ru" if is_profanity_ru else "en"
-
-        log_msg = f"❌ Profanity detected.\n\n"
-        log_msg += escape_html(text)
-        log_msg += f"\nПаттерн: {escape_html(pattern)}"
-        log_msg += f"\nЯзык: {lang}"
-
-        await message.reply(log_msg)
+    diagnostic = _format_profanity_diagnostic(text)
+    if diagnostic:
+        await message.reply(diagnostic)
     else:
         await message.reply("✅ No profanity detected.")
 
@@ -258,23 +262,9 @@ async def cmd_profanity_check_private(message: Message) -> None:
         await message.reply("Укажите текст для проверки после команды.")
         return
 
-    # check russian
-    is_profanity_ru, word_ru, line_info_ru = check_for_profanity(text, "ru")
-
-    # check english
-    is_profanity_en, word_en, line_info_en = check_for_profanity(text, "en")
-
-    if is_profanity_ru or is_profanity_en:
-        word = word_ru if is_profanity_ru else word_en
-        pattern = line_info_ru[5][0] if is_profanity_ru else line_info_en[5][0]
-        lang = "ru" if is_profanity_ru else "en"
-
-        log_msg = f"❌ Profanity detected.\n\n"
-        log_msg += escape_html(text)
-        log_msg += f"\nПаттерн: {escape_html(pattern)}"
-        log_msg += f"\nЯзык: {lang}"
-
-        await message.reply(log_msg)
+    diagnostic = _format_profanity_diagnostic(text)
+    if diagnostic:
+        await message.reply(diagnostic)
     else:
         await message.reply("✅ No profanity detected.")
 

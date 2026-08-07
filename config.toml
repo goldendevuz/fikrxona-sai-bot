@@ -88,6 +88,11 @@ autoban_threshold = 20
 autoban_rep_threshold = 50
 
 
+[profanity]
+allowlist_ru = []
+allowlist_en = []
+
+
 
 # accounts with rep > allow_comments_rep_threshold__woman will be skipped from nsfw checks
 # note that NSFW checks are performed only with FEMALE accounts with low rep
