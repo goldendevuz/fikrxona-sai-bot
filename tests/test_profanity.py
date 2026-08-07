@@ -47,6 +47,12 @@ class ProfanityServiceTestCase(unittest.TestCase):
         self.assertTrue(check_for_profanity("$hit", "en").detected)
         self.assertTrue(check_for_profanity("shіt", "en").detected)  # Cyrillic і
 
+    def test_prefixed_russian_profanity_with_latin_confusables(self):
+        text = "но всем поxyй извините я хочу проверить бота"
+        result = check_for_profanity(text, "ru")
+        self.assertTrue(result.detected)
+        self.assertEqual(result.word, "поxyй")
+
     def test_call_specific_allowlist_suppresses_exact_words_only(self):
         self.assertFalse(
             check_for_profanity("shit", "en", allowlist={"shit"}).detected
